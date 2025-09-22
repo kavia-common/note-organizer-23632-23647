@@ -1,138 +1,443 @@
-import type { MetaFunction } from "@remix-run/node";
+import type { MetaFunction, ActionFunctionArgs, LoaderFunctionArgs } from "@remix-run/node";
+import { json, redirect } from "@remix-run/node";
+import { Form, useLoaderData, useNavigation, useSubmit, useSearchParams } from "@remix-run/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
+/**
+ PUBLIC_INTERFACE
+*/
 export const meta: MetaFunction = () => {
   return [
-    { title: "New Remix App" },
-    { name: "description", content: "Welcome to Remix!" },
+    { title: "Notes — Ocean Professional" },
+    {
+      name: "description",
+      content:
+        "A simple notes app to create, view, edit, and delete notes with a modern Ocean Professional theme.",
+    },
   ];
 };
 
+type Note = {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
+type LoaderData = {
+  notes: Note[];
+  selectedId?: string;
+};
+
+/**
+ Utilities to work with localStorage safely on client.
+ The loader returns empty set; the UI hydrates from localStorage in useEffect.
+ This keeps the app fully frontend while using Remix structure.
+*/
+const STORAGE_KEY = "remix-notes-v1";
+
+/**
+ PUBLIC_INTERFACE
+*/
+export async function loader({ request }: LoaderFunctionArgs) {
+  // Server cannot access browser localStorage, so we return an empty dataset.
+  // Client-side effect will hydrate from localStorage after render.
+  const url = new URL(request.url);
+  const selectedId = url.searchParams.get("note") || undefined;
+  return json<LoaderData>({ notes: [], selectedId });
+}
+
+/**
+ PUBLIC_INTERFACE
+*/
+export async function action({ request }: ActionFunctionArgs) {
+  const formData = await request.formData();
+  // Intentionally unused on the server; client handles localStorage mutations.
+  // Keeping form handling structure for future backend integration.
+
+  // Since we are using localStorage for persistence, we redirect back to the page.
+  // The client will process the intent optimistically and sync to localStorage.
+  const selectedId = formData.get("id") ? String(formData.get("id")) : undefined;
+  const sp = selectedId ? `?note=${encodeURIComponent(selectedId)}` : "";
+  return redirect("/" + sp);
+}
+
+/**
+ Hook to manage notes in localStorage with React state.
+*/
+function useLocalNotes(initial: Note[]) {
+  const [notes, setNotes] = useState<Note[]>(initial);
+
+  // Load from localStorage on client
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Note[];
+        setNotes(parsed);
+      }
+    } catch {
+      // ignore parsing errors
+    }
+  }, []);
+
+  // Persist anytime notes change
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+    } catch {
+      // storage may be unavailable
+    }
+  }, [notes]);
+
+  const createNote = (partial?: Partial<Note>) => {
+    const ts = Date.now();
+    const newNote: Note = {
+      id: cryptoRandomId(),
+      title: partial?.title ?? "Untitled",
+      content: partial?.content ?? "",
+      createdAt: ts,
+      updatedAt: ts,
+    };
+    setNotes((prev) => [newNote, ...prev]);
+    return newNote;
+  };
+
+  const updateNote = (id: string, updates: Partial<Note>) => {
+    setNotes((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, ...updates, updatedAt: Date.now() } : n))
+    );
+  };
+
+  const deleteNote = (id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+  };
+
+  return { notes, setNotes, createNote, updateNote, deleteNote };
+}
+
+function cryptoRandomId() {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    // @ts-expect-error - randomUUID exists in modern runtimes
+    return crypto.randomUUID();
+  }
+  return Math.random().toString(36).slice(2);
+}
+
+function formatRelativeTime(timestamp: number) {
+  const diff = Date.now() - timestamp;
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins === 1) return "1 min ago";
+  if (mins < 60) return `${mins} mins ago`;
+  const hours = Math.round(mins / 60);
+  if (hours === 1) return "1 hour ago";
+  if (hours < 24) return `${hours} hours ago`;
+  const days = Math.round(hours / 24);
+  if (days === 1) return "1 day ago";
+  return `${days} days ago`;
+}
+
+/**
+ PUBLIC_INTERFACE
+ Main Notes App Route Component
+*/
 export default function Index() {
+  const data = useLoaderData<LoaderData>();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { state } = useNavigation();
+  const isSubmitting = state !== "idle";
+
+  const { notes, createNote, updateNote, deleteNote } = useLocalNotes(data.notes);
+
+  // Selected note id from URL
+  const selectedId = searchParams.get("note") || undefined;
+  const selected = useMemo(
+    () => notes.find((n) => n.id === selectedId),
+    [notes, selectedId]
+  );
+
+  // Auto-select first note if none selected and notes exist
+  useEffect(() => {
+    if (!selectedId && notes.length > 0) {
+      setSearchParams((sp) => {
+        const next = new URLSearchParams(sp);
+        next.set("note", notes[0].id);
+        return next;
+      });
+    }
+  }, [notes, selectedId, setSearchParams]);
+
+  // Handlers
+  const handleCreate = () => {
+    const newNote = createNote({ title: "New Note" });
+    setSearchParams((sp) => {
+      const next = new URLSearchParams(sp);
+      next.set("note", newNote.id);
+      return next;
+    });
+  };
+
+  const handleDelete = (id: string) => {
+    deleteNote(id);
+    // If we deleted the selected note, switch to next available
+    setSearchParams((sp) => {
+      const next = new URLSearchParams(sp);
+      const remaining = notes.filter((n) => n.id !== id);
+      if (remaining.length) {
+        next.set("note", remaining[0].id);
+      } else {
+        next.delete("note");
+      }
+      return next;
+    });
+  };
+
+  const handleTitleChange = (id: string, title: string) => {
+    updateNote(id, { title });
+  };
+
+  const handleContentChange = (id: string, content: string) => {
+    updateNote(id, { content });
+  };
+
   return (
-    <div className="flex h-screen items-center justify-center">
-      <div className="flex flex-col items-center gap-16">
-        <header className="flex flex-col items-center gap-9">
-          <h1 className="leading text-2xl font-bold text-gray-800 dark:text-gray-100">
-            Welcome to <span className="sr-only">Remix</span>
-          </h1>
-          <div className="h-[144px] w-[434px]">
-            <img
-              src="/logo-light.png"
-              alt="Remix"
-              className="block w-full dark:hidden"
-            />
-            <img
-              src="/logo-dark.png"
-              alt="Remix"
-              className="hidden w-full dark:block"
-            />
+    <div className="flex h-dvh w-full flex-col">
+      {/* Top Bar */}
+      <header className="ocean-gradient surface sticky top-0 z-10 border-b border-gray-200/70">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-blue-600 text-white shadow-sm">
+              {/* simple wave logo */}
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M3 15c2.5 0 2.5-3 5-3s2.5 3 5 3 2.5-3 5-3"
+                  stroke="white"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </div>
+            <div className="flex flex-col">
+              <h1 className="text-base font-semibold text-gray-800">Notes</h1>
+              <p className="text-xs text-gray-500">Ocean Professional</p>
+            </div>
           </div>
-        </header>
-        <nav className="flex flex-col items-center justify-center gap-4 rounded-3xl border border-gray-200 p-6 dark:border-gray-700">
-          <p className="leading-6 text-gray-700 dark:text-gray-200">
-            What&apos;s next?
-          </p>
-          <ul>
-            {resources.map(({ href, text, icon }) => (
-              <li key={href}>
-                <a
-                  className="group flex items-center gap-3 self-stretch p-3 leading-normal text-blue-700 hover:underline dark:text-blue-500"
-                  href={href}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {icon}
-                  {text}
-                </a>
-              </li>
-            ))}
-          </ul>
-        </nav>
-      </div>
+
+          <div className="flex items-center gap-2">
+            <button onClick={handleCreate} className="btn-primary">
+              <span className="inline-flex h-5 w-5 items-center justify-center rounded-md bg-white/20">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M12 5v14M5 12h14" stroke="white" strokeWidth="2" strokeLinecap="round" />
+                </svg>
+              </span>
+              New note
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Content */}
+      <main className="mx-auto flex h-[calc(100dvh-64px)] w-full max-w-7xl flex-1 gap-4 px-4 pb-6 pt-4 sm:px-6">
+        {/* Sidebar */}
+        <aside className="surface relative flex w-full max-w-[320px] flex-col overflow-hidden border border-gray-200">
+          <div className="flex items-center justify-between px-3 py-3">
+            <div className="flex items-center gap-2">
+              <span className="note-badge">Notes</span>
+              <span className="text-xs text-gray-500">{notes.length}</span>
+            </div>
+            <button className="icon-btn" onClick={handleCreate} title="Create note">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+          <div className="divider" />
+          <div className="flex-1 overflow-y-auto px-2 py-2">
+            {notes.length === 0 ? (
+              <div className="m-3 rounded-lg bg-gray-50 p-4 text-sm text-gray-600">
+                No notes yet. Click “New note” to get started.
+              </div>
+            ) : (
+              <ul className="space-y-1">
+                {notes.map((n) => {
+                  const active = n.id === selectedId;
+                  return (
+                    <li key={n.id}>
+                      <button
+                        className={`sidebar-item ${active ? "sidebar-item-active" : ""}`}
+                        onClick={() =>
+                          setSearchParams((sp) => {
+                            const next = new URLSearchParams(sp);
+                            next.set("note", n.id);
+                            return next;
+                          })
+                        }
+                      >
+                        <div className="mt-0.5 inline-flex h-2 w-2 flex-none rounded-full bg-blue-500" />
+                        <div className="flex min-w-0 flex-1 flex-col">
+                          <div className="flex items-center justify-between">
+                            <p className="truncate text-sm font-medium text-gray-800">{n.title || "Untitled"}</p>
+                            <span className="ml-2 flex-shrink-0 text-[10px] text-gray-400">
+                              {formatRelativeTime(n.updatedAt)}
+                            </span>
+                          </div>
+                          <p className="line-clamp-1 text-xs text-gray-500">{n.content || "No content"}</p>
+                        </div>
+                        {active && (
+                          <span className="ml-1 rounded-md bg-blue-100 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
+                            Active
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </aside>
+
+        {/* Editor panel */}
+        <section className="surface flex min-w-0 flex-1 flex-col overflow-hidden border border-gray-200">
+          {!selected ? (
+            <div className="flex h-full items-center justify-center p-6">
+              <div className="text-center">
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-blue-50 text-blue-600 ring-1 ring-blue-100">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="M12 5v14M5 12h14"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </div>
+                <h2 className="text-lg font-semibold text-gray-800">Create your first note</h2>
+                <p className="mt-1 text-sm text-gray-600">Notes are saved in your browser.</p>
+                <div className="mt-4">
+                  <button onClick={handleCreate} className="btn-primary">New note</button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <Editor
+              key={selected.id}
+              note={selected}
+              onDelete={() => handleDelete(selected.id)}
+              onTitleChange={(t) => handleTitleChange(selected.id, t)}
+              onContentChange={(c) => handleContentChange(selected.id, c)}
+              isSaving={isSubmitting}
+            />
+          )}
+        </section>
+      </main>
     </div>
   );
 }
 
-const resources = [
-  {
-    href: "https://remix.run/start/quickstart",
-    text: "Quick Start (5 min)",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M8.51851 12.0741L7.92592 18L15.6296 9.7037L11.4815 7.33333L12.0741 2L4.37036 10.2963L8.51851 12.0741Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://remix.run/start/tutorial",
-    text: "Tutorial (30 min)",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M4.561 12.749L3.15503 14.1549M3.00811 8.99944H1.01978M3.15503 3.84489L4.561 5.2508M8.3107 1.70923L8.3107 3.69749M13.4655 3.84489L12.0595 5.2508M18.1868 17.0974L16.635 18.6491C16.4636 18.8205 16.1858 18.8205 16.0144 18.6491L13.568 16.2028C13.383 16.0178 13.0784 16.0347 12.915 16.239L11.2697 18.2956C11.047 18.5739 10.6029 18.4847 10.505 18.142L7.85215 8.85711C7.75756 8.52603 8.06365 8.21994 8.39472 8.31453L17.6796 10.9673C18.0223 11.0653 18.1115 11.5094 17.8332 11.7321L15.7766 13.3773C15.5723 13.5408 15.5554 13.8454 15.7404 14.0304L18.1868 16.4767C18.3582 16.6481 18.3582 16.926 18.1868 17.0974Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://remix.run/docs",
-    text: "Remix Docs",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 20 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M9.99981 10.0751V9.99992M17.4688 17.4688C15.889 19.0485 11.2645 16.9853 7.13958 12.8604C3.01467 8.73546 0.951405 4.11091 2.53116 2.53116C4.11091 0.951405 8.73546 3.01467 12.8604 7.13958C16.9853 11.2645 19.0485 15.889 17.4688 17.4688ZM2.53132 17.4688C0.951566 15.8891 3.01483 11.2645 7.13974 7.13963C11.2647 3.01471 15.8892 0.951453 17.469 2.53121C19.0487 4.11096 16.9854 8.73551 12.8605 12.8604C8.73562 16.9853 4.11107 19.0486 2.53132 17.4688Z"
-          strokeWidth="1.5"
-          strokeLinecap="round"
-        />
-      </svg>
-    ),
-  },
-  {
-    href: "https://rmx.as/discord",
-    text: "Join Discord",
-    icon: (
-      <svg
-        xmlns="http://www.w3.org/2000/svg"
-        width="24"
-        height="20"
-        viewBox="0 0 24 20"
-        fill="none"
-        className="stroke-gray-600 group-hover:stroke-current dark:stroke-gray-300"
-      >
-        <path
-          d="M15.0686 1.25995L14.5477 1.17423L14.2913 1.63578C14.1754 1.84439 14.0545 2.08275 13.9422 2.31963C12.6461 2.16488 11.3406 2.16505 10.0445 2.32014C9.92822 2.08178 9.80478 1.84975 9.67412 1.62413L9.41449 1.17584L8.90333 1.25995C7.33547 1.51794 5.80717 1.99419 4.37748 2.66939L4.19 2.75793L4.07461 2.93019C1.23864 7.16437 0.46302 11.3053 0.838165 15.3924L0.868838 15.7266L1.13844 15.9264C2.81818 17.1714 4.68053 18.1233 6.68582 18.719L7.18892 18.8684L7.50166 18.4469C7.96179 17.8268 8.36504 17.1824 8.709 16.4944L8.71099 16.4904C10.8645 17.0471 13.128 17.0485 15.2821 16.4947C15.6261 17.1826 16.0293 17.8269 16.4892 18.4469L16.805 18.8725L17.3116 18.717C19.3056 18.105 21.1876 17.1751 22.8559 15.9238L23.1224 15.724L23.1528 15.3923C23.5873 10.6524 22.3579 6.53306 19.8947 2.90714L19.7759 2.73227L19.5833 2.64518C18.1437 1.99439 16.6386 1.51826 15.0686 1.25995ZM16.6074 10.7755L16.6074 10.7756C16.5934 11.6409 16.0212 12.1444 15.4783 12.1444C14.9297 12.1444 14.3493 11.6173 14.3493 10.7877C14.3493 9.94885 14.9378 9.41192 15.4783 9.41192C16.0471 9.41192 16.6209 9.93851 16.6074 10.7755ZM8.49373 12.1444C7.94513 12.1444 7.36471 11.6173 7.36471 10.7877C7.36471 9.94885 7.95323 9.41192 8.49373 9.41192C9.06038 9.41192 9.63892 9.93712 9.6417 10.7815C9.62517 11.6239 9.05462 12.1444 8.49373 12.1444Z"
-          strokeWidth="1.5"
-        />
-      </svg>
-    ),
-  },
-];
+function Editor({
+  note,
+  onDelete,
+  onTitleChange,
+  onContentChange,
+  isSaving,
+}: {
+  note: Note;
+  onDelete: () => void;
+  onTitleChange: (t: string) => void;
+  onContentChange: (c: string) => void;
+  isSaving: boolean;
+}) {
+  const titleRef = useRef<HTMLInputElement>(null);
+  const submit = useSubmit();
+
+  // Auto-focus title when opening a new note with default title "New Note"
+  useEffect(() => {
+    if (note.title === "New Note") {
+      titleRef.current?.select();
+    }
+  }, [note.id, note.title]);
+
+  return (
+    <div className="flex h-full flex-col">
+      <div className="flex items-center justify-between gap-3 border-b border-gray-200 px-4 py-3">
+        <div className="flex items-center gap-2">
+          <span className="note-badge">Editor</span>
+          <span className="text-xs text-gray-500">Last edit {formatRelativeTime(note.updatedAt)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Form method="post" onSubmit={(e) => {
+            e.preventDefault();
+            onDelete();
+            // Also inform action for URL-state parity (no-op server)
+            const fd = new FormData();
+            fd.append("intent", "delete");
+            fd.append("id", note.id);
+            submit(fd, { method: "post" });
+          }}>
+            <button type="submit" className="btn-ghost text-red-600 hover:bg-red-50 hover:text-red-700">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M6 7h12M10 10v6M14 10v6M9 7l1-2h4l1 2m-9 0l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              Delete
+            </button>
+          </Form>
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-4">
+        <div className="mx-auto max-w-3xl">
+          <input
+            ref={titleRef}
+            value={note.title}
+            onChange={(e) => onTitleChange(e.target.value)}
+            placeholder="Note title"
+            className="input mb-3 text-lg font-semibold"
+            aria-label="Note title"
+          />
+          <textarea
+            value={note.content}
+            onChange={(e) => onContentChange(e.target.value)}
+            placeholder="Write your note here..."
+            className="textarea min-h-[50dvh]"
+            aria-label="Note content"
+          />
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between border-t border-gray-200 px-4 py-3">
+        <div className="text-xs text-gray-500">
+          {isSaving ? "Saving…" : "Saved locally"}
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            className="btn-primary"
+            onClick={() => {
+              // no-op explicit save as changes are auto-saved; show feedback
+              const el = document.createElement("span");
+              el.textContent = "Saved!";
+              el.className =
+                "ml-2 rounded bg-green-50 px-2 py-0.5 text-xs text-green-700 ring-1 ring-green-200";
+              // ephemeral UI indication
+              (event?.currentTarget as HTMLButtonElement)?.appendChild(el);
+              setTimeout(() => el.remove(), 800);
+            }}
+          >
+            Save
+          </button>
+          <button
+            className="btn-ghost"
+            onClick={() => {
+              onTitleChange(note.title.trim());
+              onContentChange(note.content);
+            }}
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}

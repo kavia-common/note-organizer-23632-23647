@@ -9,6 +9,9 @@ import type { LinksFunction } from "@remix-run/node";
 
 import "./tailwind.css";
 
+/**
+ PUBLIC_INTERFACE
+*/
 export const links: LinksFunction = () => [
   { rel: "preconnect", href: "https://fonts.googleapis.com" },
   {
@@ -24,14 +27,15 @@ export const links: LinksFunction = () => [
 
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" className="h-full">
       <head>
         <meta charSet="utf-8" />
+        <meta name="theme-color" content="#2563EB" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <Meta />
         <Links />
       </head>
-      <body>
+      <body className="min-h-full bg-[var(--color-bg)] antialiased">
         {children}
         <ScrollRestoration />
         <Scripts />
@@ -40,6 +44,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ PUBLIC_INTERFACE
+*/
 export default function App() {
   return <Outlet />;
 }
